@@ -43,7 +43,6 @@ jobs:
             jq \
             libglib2.0-bin \
             make \
-            node-chalk \
             unzip
 
       - name: Run lint, schema, and unit checks

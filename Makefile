@@ -10,7 +10,7 @@ JS_FILES := extension.js prefs.js $(MODULES) tests/test-core.js tests/test-ip-se
 all: check pack
 
 check:
-	eslint $(JS_FILES)
+	eslint --format unix $(JS_FILES)
 	glib-compile-schemas --strict --dry-run schemas
 	gjs -m tests/test-core.js
 	gjs -m tests/test-ip-service.js
