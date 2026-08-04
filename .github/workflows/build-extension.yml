@@ -33,7 +33,10 @@ jobs:
       - name: Install GNOME 50 build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install \
+            -o Dpkg::Use-Pty=0 \
+            --no-install-recommends \
+            --yes \
             eslint \
             gjs \
             gnome-shell \
