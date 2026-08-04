@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="network-quality-ip">
+  <schema id="org.gnome.shell.extensions.network-quality-ip"
+          path="/org/gnome/shell/extensions/network-quality-ip/">
+    <key name="ping-target" type="s">
+      <default>'1.1.1.1'</default>
+      <summary>Ping target</summary>
+      <description>IPv4 address or DNS hostname probed once per second.</description>
+    </key>
+    <key name="green-latency-max" type="i">
+      <range min="1" max="999"/>
+      <default>80</default>
+      <summary>Green latency maximum</summary>
+      <description>RTT values at or below this number of milliseconds are green.</description>
+    </key>
+    <key name="amber-latency-max" type="i">
+      <range min="2" max="1000"/>
+      <default>150</default>
+      <summary>Amber latency maximum</summary>
+      <description>RTT values at or below this number of milliseconds are amber; higher values are red.</description>
+    </key>
+  </schema>
+</schemalist>

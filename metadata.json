@@ -1,0 +1,7 @@
+{
+  "uuid": "network-quality-ip@local",
+  "name": "Network Quality & IP",
+  "description": "Shows a rolling 60-second ICMP latency graph, public IPv4 location, and IP reputation in the top panel.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.network-quality-ip"
+}

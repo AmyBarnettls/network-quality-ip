@@ -1,0 +1,49 @@
+.network-quality-panel-box {
+    spacing: 4px;
+}
+
+.network-quality-graph {
+    background-color: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 3px;
+}
+
+.network-quality-separator {
+    color: rgba(255, 255, 255, 0.55);
+}
+
+.network-quality-country,
+.network-quality-purity {
+    font-weight: 600;
+}
+
+.purity-clean {
+    color: #57e389;
+}
+
+.purity-attention {
+    color: #f8e45c;
+}
+
+.purity-risk {
+    color: #ff7b63;
+}
+
+.purity-unknown {
+    color: #c0bfbc;
+}
+
+.network-quality-info-title {
+    color: rgba(255, 255, 255, 0.72);
+    padding-right: 18px;
+}
+
+.network-quality-info-value {
+    font-feature-settings: "tnum";
+}
+
+.network-quality-notice {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 0.9em;
+    font-style: italic;
+}

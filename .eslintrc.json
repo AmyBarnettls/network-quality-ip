@@ -1,0 +1,28 @@
+{
+  "env": {
+    "es6": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2020,
+    "sourceType": "module"
+  },
+  "globals": {
+    "console": "readonly",
+    "TextDecoder": "readonly",
+    "global": "readonly"
+  },
+  "rules": {
+    "array-bracket-spacing": ["error", "never"],
+    "brace-style": ["error", "1tbs", {"allowSingleLine": true}],
+    "comma-dangle": ["error", "always-multiline"],
+    "comma-spacing": "error",
+    "eqeqeq": "error",
+    "keyword-spacing": "error",
+    "no-trailing-spaces": "error",
+    "no-unused-vars": ["error", {"argsIgnorePattern": "^_"}],
+    "object-curly-spacing": ["error", "never"],
+    "quotes": ["error", "single", {"allowTemplateLiterals": true}],
+    "semi": ["error", "always"],
+    "space-before-blocks": "error"
+  }
+}
