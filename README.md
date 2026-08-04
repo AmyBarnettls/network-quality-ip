@@ -39,7 +39,7 @@ make smoke
 The installable bundle is written to:
 
 ```text
-dist/network-quality-ip@local.shell-extension.zip
+dist/network-quality-ip@amybarnettls.github.io.shell-extension.zip
 ```
 
 Install and enable it for the current user with:
@@ -53,14 +53,27 @@ new extension immediately. If `make install` prints a notice, log out and back
 in once, then run:
 
 ```sh
-gnome-extensions enable network-quality-ip@local
+gnome-extensions enable network-quality-ip@amybarnettls.github.io
 ```
 
 Open its preferences with:
 
 ```sh
-gnome-extensions prefs network-quality-ip@local
+gnome-extensions prefs network-quality-ip@amybarnettls.github.io
 ```
+
+## GitHub Actions release artifact
+
+Every push to `main`, version tag, pull request, or manual workflow dispatch runs
+the checks on an Ubuntu 26.04 GitHub-hosted runner and builds a GNOME review
+archive. Open the repository's **Actions** tab, select a successful
+**Build GNOME Extension** run, and download the
+`network-quality-ip-gnome-shell-50` artifact.
+
+GitHub wraps workflow artifacts in an outer ZIP. Extract it once, then submit
+the contained
+`network-quality-ip@amybarnettls.github.io.shell-extension.zip` file to
+<https://extensions.gnome.org/upload/>. Do not unpack the inner extension ZIP.
 
 View runtime errors with:
 

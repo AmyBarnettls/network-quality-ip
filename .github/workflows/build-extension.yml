@@ -1,0 +1,102 @@
+name: Build GNOME Extension
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EXTENSION_UUID: network-quality-ip@amybarnettls.github.io
+  EXTENSION_ZIP: dist/network-quality-ip@amybarnettls.github.io.shell-extension.zip
+
+jobs:
+  build:
+    name: Check and package for GNOME Shell 50
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install GNOME 50 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            eslint \
+            gjs \
+            gnome-shell \
+            jq \
+            libglib2.0-bin \
+            make \
+            unzip
+
+      - name: Run lint, schema, and unit checks
+        run: make check
+
+      - name: Build extension ZIP
+        run: make pack
+
+      - name: Verify GNOME submission archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$EXTENSION_ZIP"
+          unzip -t "$EXTENSION_ZIP"
+
+          archive_entries="$(unzip -Z1 "$EXTENSION_ZIP")"
+          for required in \
+            metadata.json \
+            extension.js \
+            LICENSE \
+            schemas/org.gnome.shell.extensions.network-quality-ip.gschema.xml; do
+            if ! grep -Fxq "$required" <<<"$archive_entries"; then
+              echo "Required archive entry is missing: $required" >&2
+              exit 1
+            fi
+          done
+
+          if unexpected="$(grep -Ev \
+            '^(LICENSE|metadata\.json|extension\.js|prefs\.js|stylesheet\.css|core\.js|pingMonitor\.js|ipService\.js|schemas/|schemas/org\.gnome\.shell\.extensions\.network-quality-ip\.gschema\.xml)$' \
+            <<<"$archive_entries")"; then
+            echo "Unexpected files in GNOME submission archive:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          unzip -p "$EXTENSION_ZIP" metadata.json | jq --exit-status \
+            --arg uuid "$EXTENSION_UUID" \
+            '.uuid == $uuid
+             and .["shell-version"] == ["50"]
+             and .url == "https://github.com/AmyBarnettls/network-quality-ip"
+             and (has("version") | not)'
+
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          unzip -q "$EXTENSION_ZIP" -d "$verify_dir"
+          glib-compile-schemas --strict --dry-run "$verify_dir/schemas"
+
+          sha256sum "$EXTENSION_ZIP" >"$EXTENSION_ZIP.sha256"
+
+      - name: Upload GNOME submission artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: network-quality-ip-gnome-shell-50
+          path: |
+            ${{ env.EXTENSION_ZIP }}
+            ${{ env.EXTENSION_ZIP }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

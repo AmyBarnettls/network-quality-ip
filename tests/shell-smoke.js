@@ -6,7 +6,7 @@ export const METRICS = {};
 export async function run() {
     await Scripting.sleep(1500);
 
-    const indicator = Main.panel.statusArea['network-quality-ip@local'];
+    const indicator = Main.panel.statusArea['network-quality-ip@amybarnettls.github.io'];
     if (!indicator)
         throw new Error('Network Quality & IP indicator was not added to the panel');
     if (!indicator._graph)

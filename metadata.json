@@ -1,7 +1,8 @@
 {
-  "uuid": "network-quality-ip@local",
+  "uuid": "network-quality-ip@amybarnettls.github.io",
   "name": "Network Quality & IP",
-  "description": "Shows a rolling 60-second ICMP latency graph, public IPv4 location, and IP reputation in the top panel.",
+  "description": "Shows a rolling 60-second ICMP latency graph, public IPv4 location, and IP reputation in the top panel. Public IPv4 data is sent to ipify and ipapi.is for lookup.",
   "shell-version": ["50"],
-  "settings-schema": "org.gnome.shell.extensions.network-quality-ip"
+  "settings-schema": "org.gnome.shell.extensions.network-quality-ip",
+  "url": "https://github.com/AmyBarnettls/network-quality-ip"
 }

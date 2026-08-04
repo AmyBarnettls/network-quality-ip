@@ -1,4 +1,4 @@
-UUID := network-quality-ip@local
+UUID := network-quality-ip@amybarnettls.github.io
 DIST_DIR := dist
 ZIP := $(DIST_DIR)/$(UUID).shell-extension.zip
 SCHEMA := schemas/org.gnome.shell.extensions.network-quality-ip.gschema.xml
@@ -21,10 +21,11 @@ smoke: pack
 	dbus-run-session -- timeout 60 gnome-shell-test-tool \
 		--headless --disable-animations --extension=$(ZIP) tests/shell-smoke.js
 
-$(ZIP): metadata.json extension.js prefs.js stylesheet.css $(MODULES) $(SCHEMA)
+$(ZIP): metadata.json extension.js prefs.js stylesheet.css LICENSE $(MODULES) $(SCHEMA)
 	mkdir -p $(DIST_DIR)
 	gnome-extensions pack . --force --out-dir=$(DIST_DIR) \
 		--schema=$(SCHEMA) \
+		--extra-source=LICENSE \
 		$(foreach module,$(MODULES),--extra-source=$(module))
 
 install: pack
