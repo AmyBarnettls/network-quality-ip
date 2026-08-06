@@ -1,106 +1,62 @@
 # Network Quality & IP
 
-A GNOME Shell 50 extension for Ubuntu 26.04 that shows a rolling
-60-second ICMP latency graph, the current public IPv4 country, and a simple
-IP reputation classification in the top panel.
+A small GNOME Shell 50 extension for Ubuntu 26.04. It shows a rolling
+60-second latency graph, the current public IP country, and a simple IP
+reputation label in the top panel.
 
-## What the panel shows
+## Display
 
-- 60 bars, oldest on the left and newest on the right; one ICMP sample per
-  second.
-- Bar height represents latency and is capped at 300 ms.
-- Green is at most 80 ms, amber is 81–150 ms, red is above 150 ms, and gray
-  means timeout or packet loss. Thresholds can be changed in Settings.
-- The two text fields are the public IPv4 country code and one of `Clean`,
-  `Attention`, `Risk`, or `Unknown`.
+The panel contains 60 bars, a two-letter country code, and one of `Clean`,
+`Attention`, `Risk`, `Unknown`, or `Offline`.
 
-Click the indicator to see current RTT, median, P95, jitter, packet loss,
-IPv4 location, ISP/ASN, individual reputation flags, and update time.
+- Green: at most 80 ms
+- Amber: 81–150 ms
+- Red: above 150 ms
+- Gray: timeout or packet loss
 
-## Requirements
+The menu shows current RTT, packet loss, public IP, country, ISP / ASN, and
+the reason for the reputation label.
 
-- Ubuntu 26.04 with GNOME Shell 50
-- `/usr/bin/ping` from `iputils-ping`
-- `gnome-extensions`, `glib-compile-schemas`, `gjs`, `eslint`, and `make`
+## Behavior
 
-## Build and test
+- One long-running `/usr/bin/ping` process probes `1.1.1.1` once per second.
+- `https://api.ipapi.is` is queried on startup, after reconnecting, and every
+  15 minutes while online.
+- `Risk` means Tor or abuse was reported.
+- `Attention` means VPN, proxy, or datacenter use was reported.
+- `Clean` means none of those flags was reported.
+- `Unknown` means the response was unavailable or invalid.
+
+The extension has no settings and writes no IP data to disk.
+
+## Privacy
+
+The IP lookup sends the public IPv4 or IPv6 address used for the HTTPS request
+to `ipapi.is`. Reputation data is probabilistic and is not proof that an IP
+address is safe or malicious.
+
+## Build
+
+Requires GNOME Shell 50, GJS, ESLint, `gnome-extensions`, `make`, and
+`/usr/bin/ping` from `iputils-ping`.
 
 ```sh
 make check
 make pack
+make install
 ```
 
-Run the extension inside an isolated, headless GNOME Shell 50 session with:
-
-```sh
-make smoke
-```
-
-The installable bundle is written to:
+The package is written to:
 
 ```text
 dist/network-quality-ip@amybarnettls.github.io.shell-extension.zip
 ```
 
-Install and enable it for the current user with:
-
-```sh
-make install
-```
-
-On the first installation, the running Wayland session may not discover the
-new extension immediately. If `make install` prints a notice, log out and back
-in once, then run:
-
-```sh
-gnome-extensions enable network-quality-ip@amybarnettls.github.io
-```
-
-Open its preferences with:
-
-```sh
-gnome-extensions prefs network-quality-ip@amybarnettls.github.io
-```
-
-## GitHub Actions release artifact
-
-Every push to `main`, version tag, pull request, or manual workflow dispatch runs
-the checks on an Ubuntu 26.04 GitHub-hosted runner and builds a GNOME review
-archive. Open the repository's **Actions** tab, select a successful
-**Build GNOME Extension** run, and download the
-`network-quality-ip-gnome-shell-50` artifact.
-
-GitHub wraps workflow artifacts in an outer ZIP. Extract it once, then submit
-the contained
-`network-quality-ip@amybarnettls.github.io.shell-extension.zip` file to
-<https://extensions.gnome.org/upload/>. Do not unpack the inner extension ZIP.
-
-View runtime errors with:
+Runtime errors are available with:
 
 ```sh
 journalctl --user -f -o cat /usr/bin/gnome-shell
 ```
-
-## Network and privacy behavior
-
-- `/usr/bin/ping` sends one ICMP echo per second to `1.1.1.1` by default.
-  The target can be changed in Settings.
-- `https://api.ipify.org?format=json` receives a request every 60 seconds to
-  detect the current public IPv4.
-- `https://api.ipapi.is/?q=<IPv4>` is queried on first use and whenever the
-  public IPv4 changes. It supplies location, ASN, hosting, VPN, proxy, Tor,
-  and abuse indicators.
-
-These services necessarily receive the public IPv4 used for the request.
-Reputation data is probabilistic and must not be treated as proof that an IP
-address is safe or malicious.
-
-## Reputation mapping
-
-- `Risk`: abuse or Tor is reported.
-- `Attention`: proxy, VPN, datacenter, crawler, or managed egress is reported.
-- `Clean`: none of those flags is reported.
-- `Unknown`: data is unavailable or invalid.
 
 ## License
 

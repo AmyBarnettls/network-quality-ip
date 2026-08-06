@@ -41,11 +41,10 @@ jobs:
             gjs \
             gnome-shell \
             jq \
-            libglib2.0-bin \
             make \
             unzip
 
-      - name: Run lint, schema, and unit checks
+      - name: Check the source
         run: make check
 
       - name: Build extension ZIP
@@ -60,11 +59,7 @@ jobs:
           unzip -t "$EXTENSION_ZIP"
 
           archive_entries="$(unzip -Z1 "$EXTENSION_ZIP")"
-          for required in \
-            metadata.json \
-            extension.js \
-            LICENSE \
-            schemas/org.gnome.shell.extensions.network-quality-ip.gschema.xml; do
+          for required in metadata.json extension.js core.js stylesheet.css LICENSE; do
             if ! grep -Fxq "$required" <<<"$archive_entries"; then
               echo "Required archive entry is missing: $required" >&2
               exit 1
@@ -72,7 +67,7 @@ jobs:
           done
 
           if unexpected="$(grep -Ev \
-            '^(LICENSE|metadata\.json|extension\.js|prefs\.js|stylesheet\.css|core\.js|pingMonitor\.js|ipService\.js|schemas/|schemas/org\.gnome\.shell\.extensions\.network-quality-ip\.gschema\.xml)$' \
+            '^(LICENSE|metadata\.json|extension\.js|stylesheet\.css|core\.js)$' \
             <<<"$archive_entries")"; then
             echo "Unexpected files in GNOME submission archive:" >&2
             printf '%s\n' "$unexpected" >&2
@@ -84,12 +79,8 @@ jobs:
             '.uuid == $uuid
              and .["shell-version"] == ["50"]
              and .url == "https://github.com/AmyBarnettls/network-quality-ip"
+             and (has("settings-schema") | not)
              and (has("version") | not)'
-
-          verify_dir="$(mktemp -d)"
-          trap 'rm -rf "$verify_dir"' EXIT
-          unzip -q "$EXTENSION_ZIP" -d "$verify_dir"
-          glib-compile-schemas --strict --dry-run "$verify_dir/schemas"
 
           sha256sum "$EXTENSION_ZIP" >"$EXTENSION_ZIP.sha256"
 

@@ -13,23 +13,24 @@
 }
 
 .network-quality-country,
-.network-quality-purity {
+.network-quality-risk {
     font-weight: 600;
 }
 
-.purity-clean {
+.risk-clean {
     color: #57e389;
 }
 
-.purity-attention {
+.risk-attention {
     color: #f8e45c;
 }
 
-.purity-risk {
+.risk-risk {
     color: #ff7b63;
 }
 
-.purity-unknown {
+.risk-unknown,
+.risk-offline {
     color: #c0bfbc;
 }
 
@@ -40,10 +41,4 @@
 
 .network-quality-info-value {
     font-feature-settings: "tnum";
-}
-
-.network-quality-notice {
-    color: rgba(255, 255, 255, 0.62);
-    font-size: 0.9em;
-    font-style: italic;
 }

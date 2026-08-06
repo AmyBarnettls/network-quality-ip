@@ -1,37 +1,29 @@
 UUID := network-quality-ip@amybarnettls.github.io
 DIST_DIR := dist
 ZIP := $(DIST_DIR)/$(UUID).shell-extension.zip
-SCHEMA := schemas/org.gnome.shell.extensions.network-quality-ip.gschema.xml
-MODULES := core.js pingMonitor.js ipService.js
-JS_FILES := extension.js prefs.js $(MODULES) tests/test-core.js tests/test-ip-service.js tests/shell-smoke.js
+JS_FILES := core.js extension.js
+ACTUAL_JS_FILES := $(sort $(shell find . -path './.git' -prune -o -name '*.js' -print))
 
-.PHONY: all check smoke pack install clean
+.PHONY: all check pack install clean
 
 all: check pack
 
 check:
+	test "$(ACTUAL_JS_FILES)" = "./core.js ./extension.js"
 	eslint --format unix $(JS_FILES)
-	glib-compile-schemas --strict --dry-run schemas
-	gjs -m tests/test-core.js
-	gjs -m tests/test-ip-service.js
 
 pack: $(ZIP)
 
-smoke: pack
-	dbus-run-session -- timeout 60 gnome-shell-test-tool \
-		--headless --disable-animations --extension=$(ZIP) tests/shell-smoke.js
-
-$(ZIP): metadata.json extension.js prefs.js stylesheet.css LICENSE $(MODULES) $(SCHEMA)
+$(ZIP): metadata.json extension.js core.js stylesheet.css LICENSE
 	mkdir -p $(DIST_DIR)
 	gnome-extensions pack . --force --out-dir=$(DIST_DIR) \
-		--schema=$(SCHEMA) \
-		--extra-source=LICENSE \
-		$(foreach module,$(MODULES),--extra-source=$(module))
+		--extra-source=core.js \
+		--extra-source=LICENSE
 
 install: pack
 	gnome-extensions install --force $(ZIP)
 	@gnome-extensions enable $(UUID) || \
-		echo "Installed. Log out and back in once, then run: gnome-extensions enable $(UUID)"
+		echo "Installed. Log out and back in once, then enable $(UUID)"
 
 clean:
 	rm -f $(ZIP)

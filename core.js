@@ -6,219 +6,203 @@ export const SampleStatus = Object.freeze({
     TIMEOUT: 'timeout',
 });
 
-export const Purity = Object.freeze({
+export const Risk = Object.freeze({
     CLEAN: 'Clean',
     ATTENTION: 'Attention',
     RISK: 'Risk',
     UNKNOWN: 'Unknown',
 });
 
+function readNumber(text, start, allowDecimal) {
+    let end = start;
+    let decimalSeen = false;
+
+    while (end < text.length) {
+        const character = text[end];
+        if (character >= '0' && character <= '9') {
+            end++;
+            continue;
+        }
+        if (allowDecimal && character === '.' && !decimalSeen) {
+            decimalSeen = true;
+            end++;
+            continue;
+        }
+        break;
+    }
+
+    if (end === start)
+        return null;
+
+    const value = Number(text.slice(start, end));
+    return Number.isFinite(value) ? value : null;
+}
+
 export function parsePingLine(line) {
     if (typeof line !== 'string')
         return null;
 
-    const success = line.match(/icmp_seq=(\d+).*time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms/i);
-    if (success) {
-        return {
-            sequence: Number.parseInt(success[1], 10),
-            status: SampleStatus.SUCCESS,
-            latencyMs: Number.parseFloat(success[2]),
-        };
-    }
+    const sequenceMarker = 'icmp_seq=';
+    const sequenceStart = line.indexOf(sequenceMarker);
+    if (sequenceStart < 0)
+        return null;
 
-    const timeout = line.match(/no answer yet for icmp_seq=(\d+)/i);
-    if (timeout) {
+    const sequence = readNumber(
+        line, sequenceStart + sequenceMarker.length, false);
+    if (!Number.isInteger(sequence))
+        return null;
+
+    if (line.indexOf('no answer yet for ', 0) >= 0) {
         return {
-            sequence: Number.parseInt(timeout[1], 10),
+            sequence,
             status: SampleStatus.TIMEOUT,
             latencyMs: null,
         };
     }
 
-    return null;
-}
-
-function percentile(sortedValues, quantile) {
-    if (sortedValues.length === 0)
+    let timeStart = line.indexOf('time=', sequenceStart);
+    let upperBound = false;
+    if (timeStart < 0) {
+        timeStart = line.indexOf('time<', sequenceStart);
+        upperBound = timeStart >= 0;
+    }
+    if (timeStart < 0)
         return null;
 
-    const index = Math.max(0, Math.ceil(quantile * sortedValues.length) - 1);
-    return sortedValues[index];
-}
-
-function median(sortedValues) {
-    if (sortedValues.length === 0)
+    const latency = readNumber(line, timeStart + 5, true);
+    if (latency === null)
         return null;
 
-    const midpoint = Math.floor(sortedValues.length / 2);
-    if (sortedValues.length % 2 === 1)
-        return sortedValues[midpoint];
-
-    return (sortedValues[midpoint - 1] + sortedValues[midpoint]) / 2;
+    return {
+        sequence,
+        status: SampleStatus.SUCCESS,
+        latencyMs: upperBound ? Math.max(1, latency) : latency,
+    };
 }
 
 export class SampleWindow {
     constructor(size = WINDOW_SIZE) {
         this._size = size;
-        this.reset();
-    }
-
-    reset() {
-        this._samples = new Map();
-        this._highestSequence = null;
+        this._samples = [];
     }
 
     record(event) {
         if (!event || !Number.isInteger(event.sequence) || event.sequence < 0)
             return false;
 
-        if (this._highestSequence === null) {
-            this._highestSequence = event.sequence;
-        } else if (event.sequence > this._highestSequence) {
-            for (let sequence = this._highestSequence + 1;
+        const existingIndex = this._samples.findIndex(
+            sample => sample.sequence === event.sequence);
+        if (existingIndex >= 0) {
+            const existing = this._samples[existingIndex];
+            if (existing.status === SampleStatus.SUCCESS &&
+                event.status === SampleStatus.TIMEOUT)
+                return false;
+            this._samples[existingIndex] = {...event};
+            return true;
+        }
+
+        const last = this._samples[this._samples.length - 1];
+        if (last && event.sequence < last.sequence)
+            return false;
+
+        if (last) {
+            for (let sequence = last.sequence + 1;
                 sequence < event.sequence; sequence++) {
-                this._samples.set(sequence, {
+                this._samples.push({
                     sequence,
                     status: SampleStatus.TIMEOUT,
                     latencyMs: null,
                 });
             }
-            this._highestSequence = event.sequence;
         }
 
-        const minimumSequence = this._highestSequence - this._size + 1;
-        if (event.sequence < minimumSequence)
-            return false;
-
-        const previous = this._samples.get(event.sequence);
-        if (previous && previous.status === SampleStatus.SUCCESS &&
-            event.status === SampleStatus.TIMEOUT)
-            return false;
-
-        this._samples.set(event.sequence, {
-            sequence: event.sequence,
-            status: event.status,
-            latencyMs: event.status === SampleStatus.SUCCESS
-                ? event.latencyMs
-                : null,
-        });
-
-        for (const sequence of this._samples.keys()) {
-            if (sequence < minimumSequence)
-                this._samples.delete(sequence);
-        }
-
+        this._samples.push({...event});
+        if (this._samples.length > this._size)
+            this._samples.splice(0, this._samples.length - this._size);
         return true;
     }
 
     getSamples() {
-        return [...this._samples.values()]
-            .sort((left, right) => left.sequence - right.sequence)
-            .map(sample => ({...sample}));
+        return this._samples.map(sample => ({...sample}));
     }
 
     getStats() {
-        const samples = this.getSamples();
-        const successful = samples.filter(sample =>
+        const successful = this._samples.filter(sample =>
             sample.status === SampleStatus.SUCCESS &&
             Number.isFinite(sample.latencyMs));
-        const sortedLatencies = successful
-            .map(sample => sample.latencyMs)
-            .sort((left, right) => left - right);
-
-        const adjacentDifferences = [];
-        for (let index = 1; index < successful.length; index++) {
-            if (successful[index].sequence === successful[index - 1].sequence + 1) {
-                adjacentDifferences.push(Math.abs(
-                    successful[index].latencyMs - successful[index - 1].latencyMs));
-            }
-        }
-
-        const latest = samples.length > 0 ? samples[samples.length - 1] : null;
-        const lossCount = samples.length - successful.length;
+        const latest = this._samples[this._samples.length - 1];
+        const lossCount = this._samples.length - successful.length;
 
         return {
-            totalCount: samples.length,
-            validCount: successful.length,
-            lossCount,
-            lossPercent: samples.length > 0
-                ? lossCount / samples.length * 100
-                : null,
             currentLatencyMs: latest && latest.status === SampleStatus.SUCCESS
                 ? latest.latencyMs
                 : null,
-            medianLatencyMs: median(sortedLatencies),
-            p95LatencyMs: percentile(sortedLatencies, 0.95),
-            jitterMs: adjacentDifferences.length > 0
-                ? adjacentDifferences.reduce((sum, value) => sum + value, 0) /
-                    adjacentDifferences.length
+            lossPercent: this._samples.length
+                ? lossCount / this._samples.length * 100
                 : null,
         };
     }
 }
 
-export function getSampleVisual(sample, greenMaximum, amberMaximum) {
+export function getSampleVisual(sample) {
     if (!sample || sample.status !== SampleStatus.SUCCESS ||
         !Number.isFinite(sample.latencyMs)) {
         return {color: 'timeout', heightRatio: 1};
     }
 
     let color = 'bad';
-    if (sample.latencyMs <= greenMaximum)
+    if (sample.latencyMs <= 80)
         color = 'good';
-    else if (sample.latencyMs <= amberMaximum)
+    else if (sample.latencyMs <= 150)
         color = 'warning';
 
-    const normalized = Math.min(sample.latencyMs, MAX_GRAPH_LATENCY_MS) /
-        MAX_GRAPH_LATENCY_MS;
+    const normalized = Math.min(
+        sample.latencyMs, MAX_GRAPH_LATENCY_MS) / MAX_GRAPH_LATENCY_MS;
+    return {color, heightRatio: 0.16 + normalized * 0.84};
+}
 
-    return {
-        color,
-        heightRatio: 0.16 + normalized * 0.84,
+export function normalizeIpData(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+        payload.error || typeof payload.ip !== 'string' || !payload.ip)
+        return null;
+
+    const flags = {
+        isAbuser: payload.is_abuser,
+        isDatacenter: payload.is_datacenter,
+        isProxy: payload.is_proxy,
+        isTor: payload.is_tor,
+        isVpn: payload.is_vpn,
     };
-}
+    if (Object.values(flags).some(value => typeof value !== 'boolean'))
+        return null;
 
-export function classifyPurity(intelligence) {
-    if (!intelligence || intelligence.error || intelligence.is_bogon)
-        return Purity.UNKNOWN;
+    const reasons = [];
+    if (flags.isTor)
+        reasons.push('Tor');
+    if (flags.isAbuser)
+        reasons.push('Abuse');
+    if (flags.isVpn)
+        reasons.push('VPN');
+    if (flags.isProxy)
+        reasons.push('Proxy');
+    if (flags.isDatacenter)
+        reasons.push('Datacenter');
 
-    if (intelligence.is_abuser || intelligence.is_tor)
-        return Purity.RISK;
+    let risk = Risk.CLEAN;
+    if (flags.isTor || flags.isAbuser)
+        risk = Risk.RISK;
+    else if (reasons.length)
+        risk = Risk.ATTENTION;
 
-    if (intelligence.is_proxy || intelligence.is_vpn ||
-        intelligence.is_datacenter || intelligence.is_crawler ||
-        intelligence.egress_service) {
-        return Purity.ATTENTION;
-    }
+    const country = typeof payload.cc === 'string' && payload.cc.length === 2
+        ? payload.cc.toUpperCase()
+        : '--';
+    const isp = typeof payload.company_name === 'string' && payload.company_name
+        ? payload.company_name
+        : typeof payload.asn_org === 'string' ? payload.asn_org : '';
+    const asn = Number.isInteger(payload.asn_num) && payload.asn_num > 0
+        ? `AS${payload.asn_num}`
+        : '';
 
-    return Purity.CLEAN;
-}
-
-export function isValidIpv4(value) {
-    if (typeof value !== 'string')
-        return false;
-
-    const octets = value.split('.');
-    if (octets.length !== 4)
-        return false;
-
-    return octets.every(octet => {
-        if (!/^(0|[1-9]\d{0,2})$/.test(octet))
-            return false;
-        const number = Number.parseInt(octet, 10);
-        return number >= 0 && number <= 255;
-    });
-}
-
-export function isValidPingTarget(value) {
-    if (isValidIpv4(value))
-        return true;
-    if (typeof value !== 'string' || value.length === 0 || value.length > 253)
-        return false;
-    if (value.startsWith('-') || value.endsWith('.'))
-        return false;
-
-    const labels = value.split('.');
-    return labels.every(label =>
-        /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
+    return {ip: payload.ip, country, isp, asn, risk, reasons};
 }
