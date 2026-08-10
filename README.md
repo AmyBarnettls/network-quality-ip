@@ -35,6 +35,21 @@ The IP lookup sends the public IPv4 or IPv6 address used for the HTTPS request
 to `ipapi.is`. Reputation data is probabilistic and is not proof that an IP
 address is safe or malicious.
 
+## Install from GitHub Release
+
+Ubuntu 26.04 with GNOME Shell 50 is required. Install `curl`, `unzip`, and
+`iputils-ping`, then run this single command:
+
+```sh
+release_dir="$(mktemp -d)" && curl -fL "https://github.com/AmyBarnettls/network-quality-ip/releases/download/v1.0.0/network-quality-ip-gnome-shell-50.zip" -o "$release_dir/release.zip" && unzip -q "$release_dir/release.zip" -d "$release_dir" && gnome-extensions install --force "$release_dir/network-quality-ip@amybarnettls.github.io.shell-extension.zip"
+```
+
+Log out and back in once, then enable the extension:
+
+```sh
+gnome-extensions enable network-quality-ip@amybarnettls.github.io
+```
+
 ## Build
 
 Requires GNOME Shell 50, GJS, ESLint, `gnome-extensions`, `make`, and
