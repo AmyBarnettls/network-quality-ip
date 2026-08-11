@@ -1,7 +1,7 @@
 {
   "uuid": "network-quality-ip@amybarnettls.github.io",
   "name": "Network Quality & IP",
-  "description": "Shows a 60-second latency graph, public IP country, and IP reputation. The public IP is sent to ipapi.is every 15 minutes.",
+  "description": "Shows a 3-minute HTTPS quality graph, public IP country, and IP reputation. HTTPS probes contact Google, Cloudflare, or Apple every 3 seconds.",
   "shell-version": ["50"],
   "url": "https://github.com/AmyBarnettls/network-quality-ip"
 }

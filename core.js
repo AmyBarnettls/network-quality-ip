@@ -1,9 +1,15 @@
 export const WINDOW_SIZE = 60;
-export const MAX_GRAPH_LATENCY_MS = 300;
+export const MAX_GRAPH_DURATION_MS = 3000;
 
 export const SampleStatus = Object.freeze({
     SUCCESS: 'success',
-    TIMEOUT: 'timeout',
+    FAILURE: 'failure',
+});
+
+export const ProbeProvider = Object.freeze({
+    GOOGLE: 'google',
+    CLOUDFLARE: 'cloudflare',
+    APPLE: 'apple',
 });
 
 export const Risk = Object.freeze({
@@ -13,71 +19,33 @@ export const Risk = Object.freeze({
     UNKNOWN: 'Unknown',
 });
 
-function readNumber(text, start, allowDecimal) {
-    let end = start;
-    let decimalSeen = false;
+export function validateProbeResponse(provider, status, body) {
+    if (!Number.isInteger(status) || typeof body !== 'string')
+        return false;
 
-    while (end < text.length) {
-        const character = text[end];
-        if (character >= '0' && character <= '9') {
-            end++;
-            continue;
+    if (provider === ProbeProvider.GOOGLE)
+        return status === 204 && body.length === 0;
+
+    if (provider === ProbeProvider.CLOUDFLARE) {
+        if (status !== 200)
+            return false;
+        const fields = new Map();
+        for (const line of body.trim().split('\n')) {
+            const separator = line.indexOf('=');
+            if (separator > 0)
+                fields.set(line.slice(0, separator), line.slice(separator + 1));
         }
-        if (allowDecimal && character === '.' && !decimalSeen) {
-            decimalSeen = true;
-            end++;
-            continue;
-        }
-        break;
+        return fields.get('h') === 'cloudflare.com' &&
+            Boolean(fields.get('colo')) && Boolean(fields.get('tls'));
     }
 
-    if (end === start)
-        return null;
-
-    const value = Number(text.slice(start, end));
-    return Number.isFinite(value) ? value : null;
-}
-
-export function parsePingLine(line) {
-    if (typeof line !== 'string')
-        return null;
-
-    const sequenceMarker = 'icmp_seq=';
-    const sequenceStart = line.indexOf(sequenceMarker);
-    if (sequenceStart < 0)
-        return null;
-
-    const sequence = readNumber(
-        line, sequenceStart + sequenceMarker.length, false);
-    if (!Number.isInteger(sequence))
-        return null;
-
-    if (line.indexOf('no answer yet for ', 0) >= 0) {
-        return {
-            sequence,
-            status: SampleStatus.TIMEOUT,
-            latencyMs: null,
-        };
+    if (provider === ProbeProvider.APPLE) {
+        const expected = '<HTML><HEAD><TITLE>Success</TITLE></HEAD>' +
+            '<BODY>Success</BODY></HTML>';
+        return status === 200 && body.trim() === expected;
     }
 
-    let timeStart = line.indexOf('time=', sequenceStart);
-    let upperBound = false;
-    if (timeStart < 0) {
-        timeStart = line.indexOf('time<', sequenceStart);
-        upperBound = timeStart >= 0;
-    }
-    if (timeStart < 0)
-        return null;
-
-    const latency = readNumber(line, timeStart + 5, true);
-    if (latency === null)
-        return null;
-
-    return {
-        sequence,
-        status: SampleStatus.SUCCESS,
-        latencyMs: upperBound ? Math.max(1, latency) : latency,
-    };
+    return false;
 }
 
 export class SampleWindow {
@@ -95,7 +63,7 @@ export class SampleWindow {
         if (existingIndex >= 0) {
             const existing = this._samples[existingIndex];
             if (existing.status === SampleStatus.SUCCESS &&
-                event.status === SampleStatus.TIMEOUT)
+                event.status === SampleStatus.FAILURE)
                 return false;
             this._samples[existingIndex] = {...event};
             return true;
@@ -110,8 +78,8 @@ export class SampleWindow {
                 sequence < event.sequence; sequence++) {
                 this._samples.push({
                     sequence,
-                    status: SampleStatus.TIMEOUT,
-                    latencyMs: null,
+                    status: SampleStatus.FAILURE,
+                    durationMs: null,
                 });
             }
         }
@@ -129,16 +97,16 @@ export class SampleWindow {
     getStats() {
         const successful = this._samples.filter(sample =>
             sample.status === SampleStatus.SUCCESS &&
-            Number.isFinite(sample.latencyMs));
+            Number.isFinite(sample.durationMs));
         const latest = this._samples[this._samples.length - 1];
-        const lossCount = this._samples.length - successful.length;
+        const failureCount = this._samples.length - successful.length;
 
         return {
-            currentLatencyMs: latest && latest.status === SampleStatus.SUCCESS
-                ? latest.latencyMs
+            currentDurationMs: latest && latest.status === SampleStatus.SUCCESS
+                ? latest.durationMs
                 : null,
-            lossPercent: this._samples.length
-                ? lossCount / this._samples.length * 100
+            failurePercent: this._samples.length
+                ? failureCount / this._samples.length * 100
                 : null,
         };
     }
@@ -146,18 +114,18 @@ export class SampleWindow {
 
 export function getSampleVisual(sample) {
     if (!sample || sample.status !== SampleStatus.SUCCESS ||
-        !Number.isFinite(sample.latencyMs)) {
-        return {color: 'timeout', heightRatio: 1};
+        !Number.isFinite(sample.durationMs)) {
+        return {color: 'failure', heightRatio: 1};
     }
 
     let color = 'bad';
-    if (sample.latencyMs <= 80)
+    if (sample.durationMs <= 300)
         color = 'good';
-    else if (sample.latencyMs <= 150)
+    else if (sample.durationMs <= 800)
         color = 'warning';
 
     const normalized = Math.min(
-        sample.latencyMs, MAX_GRAPH_LATENCY_MS) / MAX_GRAPH_LATENCY_MS;
+        sample.durationMs, MAX_GRAPH_DURATION_MS) / MAX_GRAPH_DURATION_MS;
     return {color, heightRatio: 0.16 + normalized * 0.84};
 }
 

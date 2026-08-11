@@ -13,190 +13,207 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {
     getSampleVisual,
     normalizeIpData,
-    parsePingLine,
+    ProbeProvider,
     Risk,
+    SampleStatus,
     SampleWindow,
+    validateProbeResponse,
     WINDOW_SIZE,
 } from './core.js';
 
-const PING_TARGET = '1.1.1.1';
 const IP_API_URL = 'https://api.ipapi.is';
 const IP_CHECK_INTERVAL_SECONDS = 15 * 60;
-const PING_RETRY_SECONDS = 5;
+const PROBE_INTERVAL_SECONDS = 3;
+const PROBE_TIMEOUT_SECONDS = 3;
+const PROBE_FAILURES_BEFORE_SWITCH = 3;
+
+const PROBE_TARGETS = Object.freeze([
+    Object.freeze({
+        provider: ProbeProvider.GOOGLE,
+        name: 'Google',
+        url: 'https://connectivitycheck.gstatic.com/generate_204',
+    }),
+    Object.freeze({
+        provider: ProbeProvider.CLOUDFLARE,
+        name: 'Cloudflare',
+        url: 'https://cloudflare.com/cdn-cgi/trace',
+    }),
+    Object.freeze({
+        provider: ProbeProvider.APPLE,
+        name: 'Apple',
+        url: 'https://www.apple.com/library/test/success.html',
+    }),
+]);
 
 const GRAPH_COLORS = Object.freeze({
     good: [0.18, 0.80, 0.44, 1],
     warning: [0.96, 0.69, 0.18, 1],
     bad: [0.91, 0.30, 0.24, 1],
-    timeout: [0.55, 0.57, 0.61, 0.9],
+    failure: [0.55, 0.57, 0.61, 0.9],
 });
 
-function formatLatency(value) {
+function formatDuration(value) {
     return Number.isFinite(value) ? `${value.toFixed(1)} ms` : '—';
 }
 
-function formatLoss(value) {
+function formatFailureRate(value) {
     return Number.isFinite(value) ? `${value.toFixed(1)}%` : '—';
 }
 
-class PingMonitor {
+class HttpsMonitor {
     constructor(onUpdate) {
         this._onUpdate = onUpdate;
         this._window = new SampleWindow();
         this._active = false;
-        this._generation = 0;
         this._nextSequence = 1;
-        this._sequenceBase = 0;
-        this._process = null;
-        this._stream = null;
-        this._cancellable = null;
-        this._retrySource = 0;
+        this._targetIndex = 0;
+        this._consecutiveFailures = 0;
+        this._timerSource = 0;
+        this._inFlight = null;
     }
 
     start() {
         if (this._active)
             return;
         this._active = true;
-        this._spawn();
+        this._consecutiveFailures = 0;
+        this._emitUpdate();
+        this._probe();
+        this._timerSource = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            PROBE_INTERVAL_SECONDS,
+            () => {
+                if (this._inFlight)
+                    this._finishFailure(this._inFlight, 'request timed out');
+                this._probe();
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
     }
 
     stop() {
         this._active = false;
-        this._generation++;
-        if (this._retrySource) {
-            GLib.source_remove(this._retrySource);
-            this._retrySource = 0;
+        if (this._timerSource) {
+            GLib.source_remove(this._timerSource);
+            this._timerSource = 0;
         }
-        if (this._cancellable)
-            this._cancellable.cancel();
-        if (this._process) {
-            try {
-                this._process.force_exit();
-            } catch (_error) {
-                // The process may already have exited.
-            }
+        if (this._inFlight) {
+            const probe = this._inFlight;
+            this._inFlight = null;
+            probe.cancellable.cancel();
+            probe.session.abort();
         }
-        this._process = null;
-        this._stream = null;
-        this._cancellable = null;
     }
 
-    _spawn() {
-        if (!this._active)
+    _probe() {
+        if (!this._active || this._inFlight)
             return;
 
-        const generation = ++this._generation;
-        this._sequenceBase = this._nextSequence - 1;
-        this._cancellable = new Gio.Cancellable();
+        const target = PROBE_TARGETS[this._targetIndex];
+        const session = new Soup.Session({
+            timeout: PROBE_TIMEOUT_SECONDS,
+            user_agent: 'Network Quality & IP',
+        });
+        const cancellable = new Gio.Cancellable();
+        const message = Soup.Message.new('GET', target.url);
+        message.add_flags(
+            Soup.MessageFlags.NO_REDIRECT | Soup.MessageFlags.NEW_CONNECTION);
+        message.get_request_headers().append(
+            'Cache-Control', 'no-cache, no-store');
+        message.get_request_headers().append('Accept', 'text/plain');
+
+        const probe = {
+            sequence: this._nextSequence,
+            target,
+            session,
+            cancellable,
+            startedUs: GLib.get_monotonic_time(),
+        };
+        this._inFlight = probe;
 
         try {
-            const launcher = new Gio.SubprocessLauncher({
-                flags: Gio.SubprocessFlags.STDOUT_PIPE |
-                    Gio.SubprocessFlags.STDERR_MERGE,
-            });
-            launcher.setenv('LC_ALL', 'C', true);
-            this._process = launcher.spawnv([
-                '/usr/bin/ping',
-                '-n',
-                '-O',
-                '-i', '1',
-                '-W', '1',
-                PING_TARGET,
-            ]);
-            this._stream = new Gio.DataInputStream({
-                base_stream: this._process.get_stdout_pipe(),
-                close_base_stream: true,
-            });
-            this._readLine(generation);
-            this._waitForExit(generation);
-        } catch (error) {
-            this._fail(generation, error);
-        }
-    }
-
-    _readLine(generation) {
-        if (!this._active || generation !== this._generation || !this._stream)
-            return;
-
-        this._stream.read_line_async(
-            GLib.PRIORITY_DEFAULT,
-            this._cancellable,
-            (stream, result) => {
-                if (!this._active || generation !== this._generation)
-                    return;
-                try {
-                    const [line] = stream.read_line_finish_utf8(result);
-                    if (line === null)
+            session.send_and_read_async(
+                message,
+                GLib.PRIORITY_DEFAULT,
+                cancellable,
+                (currentSession, result) => {
+                    if (!this._active || this._inFlight !== probe)
                         return;
-                    const event = parsePingLine(line);
-                    if (event) {
-                        event.sequence += this._sequenceBase;
-                        this._nextSequence = Math.max(
-                            this._nextSequence, event.sequence + 1);
-                        if (this._window.record(event))
-                            this._emitUpdate();
+                    try {
+                        const bytes = currentSession.send_and_read_finish(result);
+                        const body = new TextDecoder('utf-8').decode(
+                            bytes.get_data());
+                        const status = message.get_status();
+                        if (!validateProbeResponse(
+                            target.provider, status, body)) {
+                            this._finishFailure(
+                                probe, `unexpected HTTP ${status}`);
+                            return;
+                        }
+                        const durationMs =
+                            (GLib.get_monotonic_time() - probe.startedUs) / 1000;
+                        this._finishSuccess(probe, durationMs);
+                    } catch (error) {
+                        this._finishFailure(probe, error.message);
                     }
-                    this._readLine(generation);
-                } catch (error) {
-                    if (!this._isCancelled(error))
-                        this._fail(generation, error);
                 }
-            }
-        );
-    }
-
-    _waitForExit(generation) {
-        this._process.wait_async(this._cancellable, (process, result) => {
-            if (!this._active || generation !== this._generation)
-                return;
-            try {
-                process.wait_finish(result);
-                this._fail(generation, new Error('ping exited unexpectedly'));
-            } catch (error) {
-                if (!this._isCancelled(error))
-                    this._fail(generation, error);
-            }
-        });
-    }
-
-    _fail(generation, error) {
-        if (!this._active || generation !== this._generation)
-            return;
-
-        console.warn(`Network Quality & IP: ${error.message}`);
-        this._generation++;
-        if (this._cancellable)
-            this._cancellable.cancel();
-        if (this._process) {
-            try {
-                this._process.force_exit();
-            } catch (_error) {
-                // The process may already have exited.
-            }
+            );
+        } catch (error) {
+            this._finishFailure(probe, error.message);
         }
-        this._process = null;
-        this._stream = null;
-        this._cancellable = null;
-        this._retrySource = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            PING_RETRY_SECONDS,
-            () => {
-                this._retrySource = 0;
-                this._spawn();
-                return GLib.SOURCE_REMOVE;
-            }
-        );
+    }
+
+    _finishSuccess(probe, durationMs) {
+        if (!this._active || this._inFlight !== probe)
+            return;
+        this._completeProbe(probe);
+        this._consecutiveFailures = 0;
+        this._window.record({
+            sequence: probe.sequence,
+            status: SampleStatus.SUCCESS,
+            durationMs,
+            targetName: probe.target.name,
+        });
+        this._nextSequence++;
+        this._emitUpdate();
+    }
+
+    _finishFailure(probe, reason) {
+        if (!this._active || this._inFlight !== probe)
+            return;
+        this._completeProbe(probe);
+        this._window.record({
+            sequence: probe.sequence,
+            status: SampleStatus.FAILURE,
+            durationMs: null,
+            targetName: probe.target.name,
+        });
+        this._nextSequence++;
+        this._consecutiveFailures++;
+        if (this._consecutiveFailures >= PROBE_FAILURES_BEFORE_SWITCH) {
+            const previousTarget = probe.target.name;
+            this._targetIndex = (this._targetIndex + 1) % PROBE_TARGETS.length;
+            this._consecutiveFailures = 0;
+            console.warn(
+                `Network Quality & IP: ${previousTarget} probe failed ` +
+                `(${reason}); switching to ` +
+                `${PROBE_TARGETS[this._targetIndex].name}`);
+        }
+        this._emitUpdate();
+    }
+
+    _completeProbe(probe) {
+        this._inFlight = null;
+        probe.cancellable.cancel();
+        probe.session.abort();
     }
 
     _emitUpdate() {
         this._onUpdate({
             samples: this._window.getSamples(),
             stats: this._window.getStats(),
+            targetName: PROBE_TARGETS[this._targetIndex].name,
         });
-    }
-
-    _isCancelled(error) {
-        return error.code === Gio.IOErrorEnum.CANCELLED;
     }
 }
 
@@ -316,7 +333,7 @@ class NetworkIndicator extends PanelMenu.Button {
         super._init(0, 'Network Quality & IP');
 
         this._online = true;
-        this._ping = {samples: [], stats: {}};
+        this._probe = {samples: [], stats: {}, targetName: 'Google'};
         this._ip = {checking: false, data: null, stale: false};
 
         const box = new St.BoxLayout({
@@ -349,8 +366,9 @@ class NetworkIndicator extends PanelMenu.Button {
         box.add_child(this._riskLabel);
         this.add_child(box);
 
-        this._currentValue = this._addInfoRow('Current RTT');
-        this._lossValue = this._addInfoRow('Packet loss');
+        this._currentValue = this._addInfoRow('HTTPS time');
+        this._failureValue = this._addInfoRow('Failure rate');
+        this._targetValue = this._addInfoRow('Probe target');
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._ipValue = this._addInfoRow('Public IP');
         this._countryValue = this._addInfoRow('Country');
@@ -394,8 +412,8 @@ class NetworkIndicator extends PanelMenu.Button {
         this._refresh();
     }
 
-    updatePing(snapshot) {
-        this._ping = snapshot;
+    updateProbe(snapshot) {
+        this._probe = snapshot;
         this._graph.queue_repaint();
         this._refresh();
     }
@@ -406,12 +424,15 @@ class NetworkIndicator extends PanelMenu.Button {
     }
 
     _refresh() {
-        const stats = this._ping.stats || {};
+        const stats = this._probe.stats || {};
         this._currentValue.text = this._online
-            ? formatLatency(stats.currentLatencyMs)
+            ? formatDuration(stats.currentDurationMs)
             : 'Offline';
-        this._lossValue.text = this._online
-            ? formatLoss(stats.lossPercent)
+        this._failureValue.text = this._online
+            ? formatFailureRate(stats.failurePercent)
+            : 'Offline';
+        this._targetValue.text = this._online
+            ? this._probe.targetName || 'Unknown'
             : 'Offline';
 
         const data = this._ip.data;
@@ -464,7 +485,7 @@ class NetworkIndicator extends PanelMenu.Button {
     _drawGraph() {
         const [width, height] = this._graph.get_surface_size();
         const context = this._graph.get_context();
-        const samples = this._ping.samples || [];
+        const samples = this._probe.samples || [];
         const slotWidth = width / WINDOW_SIZE;
         const firstSlot = Math.max(0, WINDOW_SIZE - samples.length);
 
@@ -487,9 +508,9 @@ export default class NetworkQualityIpExtension extends Extension {
         this._indicator = new NetworkIndicator();
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'right');
 
-        this._pingMonitor = new PingMonitor(snapshot => {
+        this._probeMonitor = new HttpsMonitor(snapshot => {
             if (this._indicator)
-                this._indicator.updatePing(snapshot);
+                this._indicator.updateProbe(snapshot);
         });
         this._ipMonitor = new IpMonitor(state => {
             if (this._indicator)
@@ -515,15 +536,15 @@ export default class NetworkQualityIpExtension extends Extension {
         }
         if (this._networkMonitor && this._networkChangedId)
             this._networkMonitor.disconnect(this._networkChangedId);
-        if (this._pingMonitor)
-            this._pingMonitor.stop();
+        if (this._probeMonitor)
+            this._probeMonitor.stop();
         if (this._ipMonitor)
             this._ipMonitor.stop();
         if (this._indicator)
             this._indicator.destroy();
 
         this._indicator = null;
-        this._pingMonitor = null;
+        this._probeMonitor = null;
         this._ipMonitor = null;
         this._networkMonitor = null;
         this._networkChangedId = 0;
@@ -549,12 +570,12 @@ export default class NetworkQualityIpExtension extends Extension {
     }
 
     _startMonitors() {
-        this._pingMonitor.start();
+        this._probeMonitor.start();
         this._ipMonitor.start();
     }
 
     _stopMonitors() {
-        this._pingMonitor.stop();
+        this._probeMonitor.stop();
         this._ipMonitor.stop();
     }
 }
