@@ -1,24 +1,30 @@
 # Network Quality & IP
 
-A small GNOME Shell 50 extension for Ubuntu 26.04. It shows a rolling
-3-minute HTTPS quality graph, the current public IP country, and a simple IP
-reputation label in the top panel.
+A small GNOME Shell 50 extension for Ubuntu 26.04. It shows current CPU and
+memory usage, a rolling 3-minute HTTPS quality graph, the current public IP
+country, and a simple IP reputation label in the top panel.
 
 ## Display
 
-The panel contains 60 bars sampled every 3 seconds, a two-letter country code,
-and one of `Clean`, `Attention`, `Risk`, `Unknown`, or `Offline`.
+The panel shows CPU and memory usage updated every second, followed by 60 bars
+sampled every 3 seconds, a two-letter country code, and one of `Clean`,
+`Attention`, `Risk`, `Unknown`, or `Offline`.
 
 - Green: HTTPS request completed in at most 300 ms
 - Amber: HTTPS request completed in 301–800 ms
 - Red: HTTPS request completed in 801–2999 ms
 - Gray: DNS, TCP, TLS, HTTP validation, or 3-second timeout failure
 
-The menu shows current HTTPS time, the 60-sample failure rate, active probe
-target, public IP, country, ISP / ASN, and the reason for the reputation label.
+The menu shows CPU and memory usage, the top five CPU-consuming processes,
+current HTTPS time, the 60-sample failure rate, active probe target, public IP,
+country, ISP / ASN, and the reason for the reputation label. Top processes are
+scanned once per second only while the menu is open.
 
 ## Behavior
 
+- CPU and memory usage are read locally from `/proc` every second. Process CPU
+  usage uses the same convention as `top`, where 100% represents one logical
+  CPU. No external monitoring command is launched.
 - A fresh HTTPS connection is tested every 3 seconds. Google is used first;
   after three consecutive failures the extension switches to Cloudflare, then
   Apple, and finally loops back to Google. A working fallback remains active
@@ -35,6 +41,9 @@ target, public IP, country, ISP / ASN, and the reason for the reputation label.
 The extension has no settings and writes no IP data to disk.
 
 ## Privacy
+
+CPU, memory, and process information is read locally from `/proc`; it is not
+sent over the network or written to disk.
 
 The HTTPS quality probes expose the public IPv4 or IPv6 address used for each
 request to the active provider (Google, Cloudflare, or Apple). The IP lookup

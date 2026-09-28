@@ -2,6 +2,17 @@
     spacing: 4px;
 }
 
+.network-quality-menu {
+    width: 380px;
+}
+
+.network-quality-system {
+    width: 96px;
+    font-feature-settings: "tnum";
+    font-weight: 600;
+    text-align: center;
+}
+
 .network-quality-graph {
     background-color: rgba(255, 255, 255, 0.07);
     border: 1px solid rgba(255, 255, 255, 0.14);
@@ -15,6 +26,15 @@
 .network-quality-country,
 .network-quality-risk {
     font-weight: 600;
+    text-align: center;
+}
+
+.network-quality-country {
+    width: 24px;
+}
+
+.network-quality-risk {
+    width: 72px;
 }
 
 .risk-clean {
@@ -40,5 +60,7 @@
 }
 
 .network-quality-info-value {
+    width: 230px;
     font-feature-settings: "tnum";
+    text-align: right;
 }

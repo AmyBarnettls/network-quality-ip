@@ -2,6 +2,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Pango from 'gi://Pango';
 import Soup from 'gi://Soup?version=3.0';
 import St from 'gi://St';
 
@@ -26,6 +27,10 @@ const IP_CHECK_INTERVAL_SECONDS = 15 * 60;
 const PROBE_INTERVAL_SECONDS = 3;
 const PROBE_TIMEOUT_SECONDS = 3;
 const PROBE_FAILURES_BEFORE_SWITCH = 3;
+const SYSTEM_UPDATE_INTERVAL_SECONDS = 1;
+const TOP_PROCESS_COUNT = 5;
+
+const TEXT_DECODER = new TextDecoder('utf-8');
 
 const PROBE_TARGETS = Object.freeze([
     Object.freeze({
@@ -58,6 +63,277 @@ function formatDuration(value) {
 
 function formatFailureRate(value) {
     return Number.isFinite(value) ? `${value.toFixed(1)}%` : '—';
+}
+
+function formatUsage(value, fractionDigits = 0) {
+    return Number.isFinite(value)
+        ? `${value.toFixed(fractionDigits)}%`
+        : '—';
+}
+
+function readTextFile(path) {
+    try {
+        const [ok, contents] = GLib.file_get_contents(path);
+        return ok ? TEXT_DECODER.decode(contents) : null;
+    } catch (_error) {
+        return null;
+    }
+}
+
+function readCpuTimes() {
+    const line = readTextFile('/proc/stat')?.split('\n', 1)[0];
+    const fields = line?.trim().split(/\s+/);
+    if (!fields || fields[0] !== 'cpu')
+        return null;
+
+    const times = fields.slice(1, 9).map(Number);
+    if (times.length < 4 || times.some(value => !Number.isFinite(value)))
+        return null;
+
+    return {
+        total: times.reduce((sum, value) => sum + value, 0),
+        idle: times[3] + (times[4] || 0),
+    };
+}
+
+function readMemoryUsage() {
+    const contents = readTextFile('/proc/meminfo');
+    const total = Number(/^MemTotal:\s+(\d+)/m.exec(contents)?.[1]);
+    const available = Number(/^MemAvailable:\s+(\d+)/m.exec(contents)?.[1]);
+    if (!Number.isFinite(total) || total <= 0 ||
+        !Number.isFinite(available))
+        return null;
+
+    return Math.max(0, Math.min(100, (total - available) / total * 100));
+}
+
+function parseProcessStat(contents, pid) {
+    if (!contents)
+        return null;
+
+    const nameStart = contents.indexOf('(');
+    const nameEnd = contents.lastIndexOf(')');
+    if (nameStart < 0 || nameEnd <= nameStart)
+        return null;
+
+    const fields = contents.slice(nameEnd + 1).trim().split(/\s+/);
+    const userTicks = Number(fields[11]);
+    const systemTicks = Number(fields[12]);
+    const startTime = fields[19];
+    if (!Number.isFinite(userTicks) || !Number.isFinite(systemTicks) ||
+        !startTime)
+        return null;
+
+    const name = contents.slice(nameStart + 1, nameEnd)
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .trim();
+    return {
+        pid,
+        name: name || `PID ${pid}`,
+        ticks: userTicks + systemTicks,
+        startTime,
+    };
+}
+
+function readProcesses() {
+    const processes = new Map();
+    let enumerator = null;
+
+    try {
+        enumerator = Gio.File.new_for_path('/proc').enumerate_children(
+            'standard::name', Gio.FileQueryInfoFlags.NONE, null);
+        for (let info = enumerator.next_file(null); info;
+            info = enumerator.next_file(null)) {
+            const pid = info.get_name();
+            if (!/^\d+$/.test(pid))
+                continue;
+
+            const process = parseProcessStat(
+                readTextFile(`/proc/${pid}/stat`), pid);
+            if (process)
+                processes.set(pid, process);
+        }
+    } catch (_error) {
+        return null;
+    } finally {
+        if (enumerator) {
+            try {
+                enumerator.close(null);
+            } catch (_error) {
+                // The next scan will create a new enumerator.
+            }
+        }
+    }
+
+    return processes;
+}
+
+class SystemMonitor {
+    constructor(onUpdate) {
+        this._onUpdate = onUpdate;
+        this._active = false;
+        this._systemTimerSource = 0;
+        this._processTimerSource = 0;
+        this._previousCpu = null;
+        this._previousProcessCpu = null;
+        this._previousProcesses = null;
+        this._state = {
+            cpuPercent: null,
+            memoryPercent: null,
+            topProcesses: [],
+            collectingProcesses: false,
+        };
+    }
+
+    start() {
+        if (this._active)
+            return;
+
+        this._active = true;
+        this._previousCpu = readCpuTimes();
+        this._state.memoryPercent = readMemoryUsage();
+        this._emitUpdate();
+        this._systemTimerSource = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            SYSTEM_UPDATE_INTERVAL_SECONDS,
+            () => {
+                this._sampleSystem();
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
+    }
+
+    stop() {
+        this._active = false;
+        if (this._systemTimerSource) {
+            GLib.source_remove(this._systemTimerSource);
+            this._systemTimerSource = 0;
+        }
+        this._stopProcessSampling(false);
+        this._previousCpu = null;
+    }
+
+    setProcessSamplingEnabled(enabled) {
+        if (!this._active)
+            return;
+        if (!enabled) {
+            this._stopProcessSampling(true);
+            return;
+        }
+        if (this._processTimerSource)
+            return;
+
+        this._previousProcessCpu = readCpuTimes();
+        this._previousProcesses = readProcesses();
+        this._state.topProcesses = [];
+        this._state.collectingProcesses = Boolean(
+            this._previousProcessCpu && this._previousProcesses);
+        this._emitUpdate();
+        this._processTimerSource = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            SYSTEM_UPDATE_INTERVAL_SECONDS,
+            () => {
+                this._sampleProcesses();
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
+    }
+
+    _sampleSystem() {
+        if (!this._active)
+            return;
+
+        const currentCpu = readCpuTimes();
+        let cpuPercent = null;
+        if (currentCpu && this._previousCpu) {
+            const totalDelta = currentCpu.total - this._previousCpu.total;
+            const idleDelta = currentCpu.idle - this._previousCpu.idle;
+            if (totalDelta > 0) {
+                cpuPercent = Math.max(0, Math.min(
+                    100, (totalDelta - idleDelta) / totalDelta * 100));
+            }
+        }
+
+        this._previousCpu = currentCpu;
+        this._state.cpuPercent = cpuPercent;
+        this._state.memoryPercent = readMemoryUsage();
+        this._emitUpdate();
+    }
+
+    _sampleProcesses() {
+        if (!this._active)
+            return;
+
+        const currentCpu = readCpuTimes();
+        const currentProcesses = readProcesses();
+        if (!currentCpu || !currentProcesses) {
+            this._previousProcessCpu = null;
+            this._previousProcesses = null;
+            this._state.topProcesses = [];
+            this._state.collectingProcesses = false;
+            this._emitUpdate();
+            return;
+        }
+
+        if (!this._previousProcessCpu || !this._previousProcesses) {
+            this._previousProcessCpu = currentCpu;
+            this._previousProcesses = currentProcesses;
+            this._state.topProcesses = [];
+            this._state.collectingProcesses = true;
+            this._emitUpdate();
+            return;
+        }
+
+        const totalDelta = currentCpu.total - this._previousProcessCpu.total;
+        const processorCount = Math.max(1, GLib.get_num_processors());
+        const maximumPercent = processorCount * 100;
+        const processes = [];
+        if (totalDelta > 0) {
+            for (const process of currentProcesses.values()) {
+                const previous = this._previousProcesses.get(process.pid);
+                const ticks = previous?.startTime === process.startTime
+                    ? Math.max(0, process.ticks - previous.ticks)
+                    : 0;
+                const cpuPercent = Math.min(
+                    maximumPercent, ticks / totalDelta * maximumPercent);
+                processes.push({...process, ticks, cpuPercent});
+            }
+        }
+
+        processes.sort((first, second) =>
+            second.ticks - first.ticks || first.name.localeCompare(second.name));
+        this._state.topProcesses = processes.slice(0, TOP_PROCESS_COUNT).map(
+            process => ({
+                name: process.name,
+                cpuPercent: process.cpuPercent,
+            })
+        );
+        this._state.collectingProcesses = false;
+        this._previousProcessCpu = currentCpu;
+        this._previousProcesses = currentProcesses;
+        this._emitUpdate();
+    }
+
+    _stopProcessSampling(emitUpdate) {
+        if (this._processTimerSource) {
+            GLib.source_remove(this._processTimerSource);
+            this._processTimerSource = 0;
+        }
+        this._previousProcessCpu = null;
+        this._previousProcesses = null;
+        this._state.topProcesses = [];
+        this._state.collectingProcesses = false;
+        if (emitUpdate)
+            this._emitUpdate();
+    }
+
+    _emitUpdate() {
+        this._onUpdate({
+            ...this._state,
+            topProcesses: this._state.topProcesses.map(
+                process => ({...process})),
+        });
+    }
 }
 
 class HttpsMonitor {
@@ -331,15 +607,38 @@ const NetworkIndicator = GObject.registerClass(
 class NetworkIndicator extends PanelMenu.Button {
     _init() {
         super._init(0, 'Network Quality & IP');
+        this.menu.box.add_style_class_name('network-quality-menu');
 
         this._online = true;
         this._probe = {samples: [], stats: {}, targetName: 'Google'};
         this._ip = {checking: false, data: null, stale: false};
+        this._system = {
+            cpuPercent: null,
+            memoryPercent: null,
+            topProcesses: [],
+            collectingProcesses: false,
+        };
 
         const box = new St.BoxLayout({
             style_class: 'network-quality-panel-box',
             y_align: Clutter.ActorAlign.CENTER,
         });
+        this._cpuLabel = new St.Label({
+            text: 'CPU —',
+            style_class: 'network-quality-system',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        box.add_child(this._cpuLabel);
+        box.add_child(this._separator());
+
+        this._memoryLabel = new St.Label({
+            text: 'MEM —',
+            style_class: 'network-quality-system',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        box.add_child(this._memoryLabel);
+        box.add_child(this._separator());
+
         this._graph = new St.DrawingArea({
             style_class: 'network-quality-graph',
             width: 90,
@@ -365,6 +664,15 @@ class NetworkIndicator extends PanelMenu.Button {
         });
         box.add_child(this._riskLabel);
         this.add_child(box);
+
+        this._cpuValue = this._addInfoRow('CPU usage');
+        this._memoryValue = this._addInfoRow('Memory usage');
+        this._topProcessValues = [];
+        for (let index = 0; index < TOP_PROCESS_COUNT; index++) {
+            this._topProcessValues.push(
+                this._addInfoRow(`CPU #${index + 1}`));
+        }
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._currentValue = this._addInfoRow('HTTPS time');
         this._failureValue = this._addInfoRow('Failure rate');
@@ -402,6 +710,8 @@ class NetworkIndicator extends PanelMenu.Button {
             x_align: Clutter.ActorAlign.END,
             y_align: Clutter.ActorAlign.CENTER,
         });
+        value.clutter_text.set_ellipsize(Pango.EllipsizeMode.END);
+        value.clutter_text.set_single_line_mode(true);
         item.add_child(value);
         this.menu.addMenuItem(item);
         return value;
@@ -423,7 +733,29 @@ class NetworkIndicator extends PanelMenu.Button {
         this._refresh();
     }
 
+    updateSystem(state) {
+        this._system = state;
+        this._refresh();
+    }
+
     _refresh() {
+        this._cpuLabel.text = `CPU ${formatUsage(this._system.cpuPercent)}`;
+        this._memoryLabel.text =
+            `MEM ${formatUsage(this._system.memoryPercent)}`;
+        this._cpuValue.text = formatUsage(this._system.cpuPercent, 1);
+        this._memoryValue.text = formatUsage(this._system.memoryPercent, 1);
+        for (let index = 0; index < TOP_PROCESS_COUNT; index++) {
+            const process = this._system.topProcesses[index];
+            if (index === 0 && this._system.collectingProcesses) {
+                this._topProcessValues[index].text = 'Collecting…';
+            } else {
+                this._topProcessValues[index].text = process
+                    ? `${process.name} · ${formatUsage(
+                        process.cpuPercent, 1)}`
+                    : '—';
+            }
+        }
+
         const stats = this._probe.stats || {};
         this._currentValue.text = this._online
             ? formatDuration(stats.currentDurationMs)
@@ -516,6 +848,17 @@ export default class NetworkQualityIpExtension extends Extension {
             if (this._indicator)
                 this._indicator.updateIp(state);
         });
+        this._systemMonitor = new SystemMonitor(state => {
+            if (this._indicator)
+                this._indicator.updateSystem(state);
+        });
+        this._menuStateChangedId = this._indicator.menu.connect(
+            'open-state-changed', (_menu, isOpen) => {
+                if (this._systemMonitor)
+                    this._systemMonitor.setProcessSamplingEnabled(isOpen);
+            }
+        );
+        this._systemMonitor.start();
 
         this._networkMonitor = Gio.NetworkMonitor.get_default();
         this._online = this._networkMonitor.get_network_available();
@@ -536,6 +879,12 @@ export default class NetworkQualityIpExtension extends Extension {
         }
         if (this._networkMonitor && this._networkChangedId)
             this._networkMonitor.disconnect(this._networkChangedId);
+        if (this._indicator && this._menuStateChangedId) {
+            this._indicator.menu.disconnect(this._menuStateChangedId);
+            this._menuStateChangedId = 0;
+        }
+        if (this._systemMonitor)
+            this._systemMonitor.stop();
         if (this._probeMonitor)
             this._probeMonitor.stop();
         if (this._ipMonitor)
@@ -546,6 +895,7 @@ export default class NetworkQualityIpExtension extends Extension {
         this._indicator = null;
         this._probeMonitor = null;
         this._ipMonitor = null;
+        this._systemMonitor = null;
         this._networkMonitor = null;
         this._networkChangedId = 0;
     }
